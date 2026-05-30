@@ -4,6 +4,10 @@ import webbrowser
 import json
 import warnings
 import requests
+import requests
+from PIL import Image
+import io
+from urllib.parse import quote
 
 def open_listen_link(url):
 
@@ -612,3 +616,46 @@ def build_tracklist(tags, target_count, artist_hint=""):
         final_tracks = remove_duplicate_tracks(combined_tracks)
 
     return final_tracks[:target_count]
+
+
+
+
+
+def generate_cover(gemini_prompt, genre):
+    # REQ 6: Combine the prompt from Gemini with the user-selected music genre
+    combined_prompt = f"Album cover art, {gemini_prompt}, {genre} visual style, highly detailed"
+
+    # URL-encode the text to make it safe for web requests
+    encoded = quote(combined_prompt)
+
+    # Construct the Pollinations.ai URL
+    url = (f"https://image.pollinations.ai/prompt/{encoded}"
+           f"?width=600&height=600&nologo=true")
+
+    # Send a GET request to download the image (wait up to 90 seconds)
+    response = requests.get(url, timeout=90)
+    response.raise_for_status()
+
+    # Return the image in RGB format as a PIL Image object for the GUI developer
+    return Image.open(io.BytesIO(response.content)).convert("RGB")
+
+
+# --- TEST SECTION ---
+# This block only runs when you execute this file directly; it won't interfere when integrated into the main project.
+if __name__ == "__main__":
+    print("AI is generating the image, please wait 10-15 seconds...")
+
+    # Simulating the sample data that the Gemini (Member 2) and GUI (Member 1) developers will send
+    sample_gemini_prompt = "A rainy sea view in Izmir, peaceful and melancholic"
+    sample_genre = "Indie Rock"
+
+    try:
+        # Call our function
+        test_image = generate_cover(sample_gemini_prompt, sample_genre)
+
+        # Open the downloaded image using the computer's default image viewer
+        test_image.show()
+        print("Image successfully downloaded and displayed!")
+
+    except Exception as e:
+        print(f"An error occurred: {e}")
