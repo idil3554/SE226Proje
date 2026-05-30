@@ -3,6 +3,7 @@ from tkinter import ttk
 import webbrowser
 import json
 import warnings
+import requests
 
 def open_listen_link(url):
 
@@ -387,3 +388,227 @@ def generate_album_metadata(journal_text, genre, era, track_count, api_key):
         raise GeminiAlbumGenerationError(
             f"Gemini album generation failed: {e}"
         )
+
+
+
+LASTFM_BASE_URL = "https://ws.audioscrobbler.com/2.0/"
+LASTFM_API_KEY = "YOUR_LASTFM_API_KEY_HERE"
+
+
+def normalize_track(track_name, artist_name, url):
+    """
+    Returns a track dictionary that is compatible with the frontend format.
+    The frontend uses the name, artist, and url fields.
+    """
+
+    return {
+        "name": track_name,
+        "artist": artist_name,
+        "url": url
+    }
+
+
+def fetch_tracks_by_tag(tag, limit=10):
+    """
+    Fetches real songs from Last.fm by using the tag.gettoptracks endpoint.
+    The tag parameter represents a music genre, mood, or style.
+    """
+
+    if not tag:
+        return []
+
+    params = {
+        "method": "tag.gettoptracks",
+        "tag": tag,
+        "limit": limit,
+        "api_key": LASTFM_API_KEY,
+        "format": "json"
+    }
+
+    headers = {
+        "User-Agent": "AlbumCoverStudio/1.0"
+    }
+
+    try:
+        response = requests.get(
+            LASTFM_BASE_URL,
+            params=params,
+            headers=headers,
+            timeout=15
+        )
+
+        response.raise_for_status()
+
+        data = response.json()
+        raw_tracks = data.get("tracks", {}).get("track", [])
+
+        tracks = []
+
+        for item in raw_tracks:
+            track_name = item.get("name")
+            artist_data = item.get("artist")
+            url = item.get("url")
+
+            if isinstance(artist_data, dict):
+                artist_name = artist_data.get("name")
+            else:
+                artist_name = artist_data
+
+            if track_name and artist_name:
+                tracks.append(
+                    normalize_track(track_name, artist_name, url)
+                )
+
+        return tracks
+
+    except requests.RequestException as error:
+        print(f"Last.fm tag request failed for tag '{tag}': {error}")
+        return []
+
+    except ValueError:
+        print("Last.fm tag response could not be parsed as JSON.")
+        return []
+
+
+def fetch_tracks_by_artist(artist_name, limit=10):
+    """
+    Fetches popular songs of a specific artist from Last.fm
+    by using the artist.gettoptracks endpoint.
+    """
+
+    if not artist_name:
+        return []
+
+    params = {
+        "method": "artist.gettoptracks",
+        "artist": artist_name,
+        "limit": limit,
+        "api_key": LASTFM_API_KEY,
+        "format": "json"
+    }
+
+    headers = {
+        "User-Agent": "AlbumCoverStudio/1.0"
+    }
+
+    try:
+        response = requests.get(
+            LASTFM_BASE_URL,
+            params=params,
+            headers=headers,
+            timeout=15
+        )
+
+        response.raise_for_status()
+
+        data = response.json()
+        raw_tracks = data.get("toptracks", {}).get("track", [])
+
+        tracks = []
+
+        for item in raw_tracks:
+            track_name = item.get("name")
+            artist_data = item.get("artist")
+            url = item.get("url")
+
+            if isinstance(artist_data, dict):
+                artist_name_from_api = artist_data.get("name", artist_name)
+            else:
+                artist_name_from_api = artist_name
+
+            if track_name and artist_name_from_api:
+                tracks.append(
+                    normalize_track(track_name, artist_name_from_api, url)
+                )
+
+        return tracks
+
+    except requests.RequestException as error:
+        print(f"Last.fm artist request failed for artist '{artist_name}': {error}")
+        return []
+
+    except ValueError:
+        print("Last.fm artist response could not be parsed as JSON.")
+        return []
+
+
+def remove_duplicate_tracks(tracks):
+    """
+    Removes duplicate songs from the tracklist.
+    Duplicates are checked by using both the track name and artist name.
+    """
+
+    unique_tracks = []
+    seen_tracks = set()
+
+    for track in tracks:
+        track_name = track.get("name", "").strip().lower()
+        artist_name = track.get("artist", "").strip().lower()
+
+        unique_key = f"{track_name} - {artist_name}"
+
+        if track_name and artist_name and unique_key not in seen_tracks:
+            seen_tracks.add(unique_key)
+            unique_tracks.append(track)
+
+    return unique_tracks
+
+
+def get_tracks_from_tags(tags, target_count):
+    """
+    Fetches songs from multiple Last.fm tags, combines the results,
+    removes duplicate tracks, and returns the requested number of songs.
+    """
+
+    if not isinstance(tags, list):
+        tags = [str(tags)]
+
+    all_tracks = []
+
+    for tag in tags:
+        tag_tracks = fetch_tracks_by_tag(
+            tag=tag,
+            limit=target_count * 2
+        )
+
+        all_tracks.extend(tag_tracks)
+
+    unique_tracks = remove_duplicate_tracks(all_tracks)
+
+    return unique_tracks[:target_count]
+
+
+def build_tracklist(tags, target_count, artist_hint=""):
+    """
+    Main function that will be called by the frontend.
+
+    If artist_hint is provided, the function first tries to fetch
+    songs from that artist's top tracks.
+
+    If there are not enough songs, the list is completed with
+    tag-based Last.fm results.
+
+    If artist_hint is empty, the tracklist is generated directly
+    from the given tags.
+    """
+
+    final_tracks = []
+
+    if artist_hint:
+        artist_tracks = fetch_tracks_by_artist(
+            artist_name=artist_hint,
+            limit=target_count
+        )
+
+        final_tracks.extend(artist_tracks)
+
+    if len(final_tracks) < target_count:
+        tag_tracks = get_tracks_from_tags(
+            tags=tags,
+            target_count=target_count
+        )
+
+        combined_tracks = final_tracks + tag_tracks
+        final_tracks = remove_duplicate_tracks(combined_tracks)
+
+    return final_tracks[:target_count]
