@@ -659,3 +659,86 @@ if __name__ == "__main__":
 
     except Exception as e:
         print(f"An error occurred: {e}")
+
+        import threading
+import json
+import os
+from tkinter import filedialog
+import tkinter as tk
+from tkinter import ttk
+
+album_data = {}
+tracklist = []
+cover_image = None
+
+def update_status(text):
+    root.after(0, lambda: status_label.config(text=text))
+
+def generate_album():
+    generate_btn.config(state="disabled")
+    thread = threading.Thread(target=generate_album_worker)
+    thread.daemon = True
+    thread.start()
+
+def generate_album_worker():
+    global album_data, tracklist, cover_image
+    try:
+        update_status("🤖 Gemini is thinking...")
+        album_data = call_gemini(
+            journal_text.get("1.0", "end-1c"),
+            genre_var.get(),
+            era_var.get(),
+            int(track_count_var.get())
+        )
+
+        update_status("🎵 Fetching tracks...")
+        tracklist = fetch_tracks(
+            album_data["lastfm_tags"],
+            int(track_count_var.get())
+        )
+
+        update_status("🎨 Generating cover...")
+        cover_image = generate_cover(album_data["cover_prompt"])
+
+        root.after(0, lambda: display_results(album_data, tracklist, cover_image))
+        update_status("✅ Album ready!")
+
+    except Exception as e:
+        update_status(f"❌ Hata: {e}")
+    finally:
+        root.after(0, lambda: generate_btn.config(state="normal"))
+
+def save_album():
+    if not album_data or not cover_image:
+        update_status("⚠️ Önce albüm oluştur!")
+        return
+
+    folder = filedialog.askdirectory(title="Kayıt klasörü seç")
+    if not folder:
+        return
+
+    json_path = os.path.join(folder, "album.json")
+    with open(json_path, "w", encoding="utf-8") as f:
+        json.dump({
+            "album_name": album_data.get("album_name"),
+            "artist_name": album_data.get("artist_name"),
+            "year": album_data.get("year"),
+            "label": album_data.get("label"),
+            "mood": album_data.get("mood_description"),
+            "tracklist": tracklist
+        }, f, ensure_ascii=False, indent=2)
+
+    png_path = os.path.join(folder, "cover.png")
+    cover_image.save(png_path)
+
+    update_status("✅ Albüm kaydedildi!")
+
+    
+status_label = tk.Label(root, text="", fg="green", bg="#121212")
+status_label.pack(pady=5)
+
+generate_btn = ttk.Button(root, text="Generate Album", command=generate_album)
+generate_btn.pack(pady=5)
+
+save_btn = ttk.Button(root, text="Save Album (JSON + PNG)", command=save_album)
+save_btn.pack(pady=5)
