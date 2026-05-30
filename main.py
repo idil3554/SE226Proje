@@ -1,18 +1,88 @@
 import tkinter as tk
-from tkinter import ttk
+from tkinter import ttk, messagebox
 import webbrowser
 import json
 import warnings
+
+import cite
 import requests
 import requests
-from PIL import Image
+from PIL import Image, ImageTk
 import io
 from urllib.parse import quote
 
-def open_listen_link(url):
 
+warnings.filterwarnings("ignore", category=FutureWarning)
+
+USING_NEW_SDK = None
+
+try:
+    from google import genai
+    _ = genai.Client
+    USING_NEW_SDK = True
+except (ImportError, AttributeError):
+    try:
+        import google.generativeai as genai_legacy
+        USING_NEW_SDK = False
+    except ImportError:
+        USING_NEW_SDK = None
+
+
+GEMINI_MODEL_NAME = "gemini-2.5-flash"
+
+
+class GeminiAlbumGenerationError(Exception):
+    pass
+
+def open_listen_link(url):
     if url:
-        webbrowser.open(url)
+        webbrowser.open(url) [cite: 37, 85]
+    else:
+        messagebox.showwarning("Link Not Found", "This track does not have a Last.fm page.")
+
+def display_results(album_data_param, tracklist_param, cover_image_param):
+    global tk_cover_art
+    placeholder_label.pack_forget()
+    results_scroll_frame.pack(fill="both", expand=True)
+
+    album_name_label.config(text=album_data_param.get("album_name", "Unknown Album"))
+    album_meta_label.config(text=f"{album_data_param.get('year', '2026')} • {len(tracklist_param)} songs • {album_data_param.get('label', 'Indie')}")
+    album_tags_label.config(text=f"Tags: {', '.join(album_data_param.get('lastfm_tags', []))}")
+
+    if cover_image_param:
+        resized_img = cover_image_param.resize((150, 150), Image.Resampling.LANCZOS)
+        tk_cover_art = ImageTk.PhotoImage(resized_img)
+        cover_canvas.delete("all")
+        cover_canvas.create_image(0, 0, anchor="nw", image=tk_cover_art)
+
+    for widget in tracks_inner_frame.winfo_children():
+        widget.destroy()
+
+    for index, track in enumerate(tracklist_param, start=1):
+        track_row = tk.Frame(tracks_inner_frame, bg="#121212", pady=5)
+        track_row.pack(fill="x", pady=2)
+
+        num_lbl = tk.Label(track_row, text=str(index), font=("Helvetica", 10), fg="#B3B3B3", bg="#121212", width=3, anchor="w")
+        num_lbl.pack(side="left")
+
+        info_frame = tk.Frame(track_row, bg="#121212")
+        info_frame.pack(side="left", fill="x", expand=True, padx=10)
+
+        name_lbl = tk.Label(info_frame, text=track.get("name", "Unknown"), font=("Helvetica", 11, "bold"), fg="#FFFFFF", bg="#121212", anchor="w")
+        name_lbl.pack(fill="x")
+
+        artist_lbl = tk.Label(info_frame, text=track.get("artist", "Unknown"), font=("Helvetica", 9), fg="#B3B3B3", bg="#121212", anchor="w")
+        artist_lbl.pack(fill="x")
+
+        listen_btn = tk.Button(
+            track_row, text="Listen", font=("Helvetica", 9, "bold"),
+            bg="#282828", fg="#FFFFFF", activebackground="#3E3E3E", activeforeground="#FFFFFF",
+            bd=0, padx=12, pady=4, cursor="hand2",
+            command=lambda u=track.get("url"): open_listen_link(u)
+        )
+        listen_btn.pack(side="right", padx=5)
+
+    save_btn.pack(fill="x", pady=(20, 0))
 
 
 def simulate_backend_response():
@@ -140,9 +210,11 @@ track_spinbox = ttk.Spinbox(left_frame, from_=6, to=14, state="readonly")
 track_spinbox.set(10)
 track_spinbox.pack(fill="x", pady=(0, 30))
 
-generate_btn = tk.Button(left_frame, text="GENERATE ALBUM", font=("Helvetica", 12, "bold"), bg="#1DB954", fg="#FFFFFF",
-                         activebackground="#1ed760", activeforeground="#FFFFFF", bd=0, pady=12, cursor="hand2",
-                         command=on_generate_click)
+generate_btn = tk.Button(
+    left_frame, text="GENERATE ALBUM", font=("Helvetica", 12, "bold"), bg="#1DB954", fg="#FFFFFF",
+    activebackground="#1ed760", activeforeground="#FFFFFF", bd=0, pady=12, cursor="hand2",
+    command=generate_album
+)
 generate_btn.pack(fill="x", pady=(0, 15))
 
 status_label = tk.Label(left_frame, text="Ready", font=("Helvetica", 9, "italic"), fg="#B3B3B3", bg="#181818")
@@ -189,35 +261,10 @@ tracks_inner_frame.pack(fill="both", expand=True)
 save_btn = tk.Button(
     results_scroll_frame, text="SAVE ALBUM (JSON + PNG)", font=("Helvetica", 11, "bold"),
     bg="#1DB954", fg="#FFFFFF", activebackground="#1ed760", activeforeground="#FFFFFF",
-    bd=0, pady=10, cursor="hand2"
+    bd=0, pady=10, cursor="hand2", command=save_album
 )
 
 
-root.mainloop()
-
-
-
-warnings.filterwarnings("ignore", category=FutureWarning)
-
-USING_NEW_SDK = None
-
-try:
-    from google import genai
-    _ = genai.Client
-    USING_NEW_SDK = True
-except (ImportError, AttributeError):
-    try:
-        import google.generativeai as genai_legacy
-        USING_NEW_SDK = False
-    except ImportError:
-        USING_NEW_SDK = None
-
-
-GEMINI_MODEL_NAME = "gemini-2.5-flash"
-
-
-class GeminiAlbumGenerationError(Exception):
-    pass
 
 
 def build_gemini_prompt(journal_text, genre, era, track_count):
@@ -762,5 +809,5 @@ def save_album():
     png_path = os.path.join(folder, "cover.png")
 
     cover_image.save(png_path)
-
+    root.after(0, lambda: display_results(album_data, tracklist, cover_image))
     update_status("✅ Album saved successfully!")
