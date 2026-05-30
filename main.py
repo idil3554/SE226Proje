@@ -1,7 +1,8 @@
 import tkinter as tk
 from tkinter import ttk
 import webbrowser
-
+import json
+import warnings
 
 def open_listen_link(url):
 
@@ -189,8 +190,7 @@ save_btn = tk.Button(
 
 root.mainloop()
 
-import json
-import warnings
+
 
 warnings.filterwarnings("ignore", category=FutureWarning)
 
