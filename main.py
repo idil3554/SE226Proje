@@ -1,11 +1,11 @@
 import tkinter as tk
 from tkinter import ttk, messagebox
 import webbrowser
-import json
 import warnings
-
-import cite
-import requests
+import threading
+import json
+import os
+from tkinter import filedialog
 import requests
 from PIL import Image, ImageTk
 import io
@@ -27,8 +27,11 @@ except (ImportError, AttributeError):
     except ImportError:
         USING_NEW_SDK = None
 
-
 GEMINI_MODEL_NAME = "gemini-2.5-flash"
+LASTFM_BASE_URL = "https://ws.audioscrobbler.com/2.0/"
+
+GEMINI_API_KEY = "AQ.Ab8RN6K9oPfSNsD-86YQJvu3N4qei2_BOiVGYDIaAaTALZaZZw"  # Buraya Google AI Studio'dan aldığın anahtarı yapıştır
+LASTFM_API_KEY = "1dc7d6f0c651506352ecba5987bd7a62"  # Buraya Last.fm'den aldığın API anahtarını yapıştır
 
 
 class GeminiAlbumGenerationError(Exception):
@@ -36,9 +39,305 @@ class GeminiAlbumGenerationError(Exception):
 
 def open_listen_link(url):
     if url:
-        webbrowser.open(url) [cite: 37, 85]
+        webbrowser.open(url)
     else:
         messagebox.showwarning("Link Not Found", "This track does not have a Last.fm page.")
+
+def build_gemini_prompt(journal_text, genre, era, track_count):
+    return f"""
+You are a music industry expert and creative album concept generator.
+
+Create a fictional album concept based on the user's journal entry and selected parameters.
+Return ONLY one valid raw JSON object.
+Do not include markdown code fences.
+Do not include explanations.
+Do not include comments.
+Do not include any text before or after the JSON.
+
+The JSON object must match this schema exactly:
+
+{{
+  "album_name": "string",
+  "artist_name": "string",
+  "year": "string",
+  "label": "string",
+  "mood_description": "string",
+  "cover_prompt": "string",
+  "lastfm_tags": ["string", "string", "string", "string"]
+}}
+
+User input:
+- Journal / mood text: "{journal_text}"
+- Selected genre: "{genre}"
+- Selected era: "{era}"
+- Requested track count: {track_count}
+
+Rules:
+1. album_name, artist_name, year, and label must be fictional.
+2. year must be a realistic year from the selected era: "{era}".
+3. mood_description must be one clear sentence describing the album vibe.
+4. cover_prompt must be a detailed visual prompt suitable for AI album cover generation.
+5. lastfm_tags must contain 4 to 6 lowercase Last.fm-compatible music or mood tags.
+6. lastfm_tags must match the journal mood, selected genre, and selected era.
+8. For Turkish music, use tags such as "turkish pop", "turkish", "arabesque", "anatolian rock", or "turkish rock" when appropriate.
+9. Do not use real album names.
+10. Do not use real record label names.
+11. Return only valid JSON.
+"""
+
+
+
+
+def clean_gemini_json_text(text):
+    if not text:
+        raise GeminiAlbumGenerationError("Gemini returned an empty response.")
+    text = text.strip()
+    if text.startswith("```"):
+        text = text.replace("```json", "")
+        text = text.replace("```JSON", "")
+        text = text.replace("```", "")
+        text = text.strip()
+    start = text.find("{")
+    end = text.rfind("}")
+    if start == -1 or end == -1 or end <= start:
+        raise GeminiAlbumGenerationError(
+            "Gemini response does not contain a valid JSON object."
+        )
+
+    return text[start:end + 1].strip()
+
+def validate_album_metadata(data):
+    required_fields = [
+        "album_name",
+        "artist_name",
+        "year",
+        "label",
+        "mood_description",
+        "cover_prompt",
+        "lastfm_tags"
+    ]
+    for field in required_fields:
+        if field not in data:
+            raise GeminiAlbumGenerationError(
+                f"Missing required field in Gemini response: {field}"
+            )
+    string_fields = [
+        "album_name",
+        "artist_name",
+        "year",
+        "label",
+        "mood_description",
+        "cover_prompt",
+    ]
+    for field in string_fields:
+        if not isinstance(data[field], str):
+            raise GeminiAlbumGenerationError(
+                f"Field '{field}' must be a string."
+            )
+    if not isinstance(data["lastfm_tags"], list):
+        raise GeminiAlbumGenerationError("lastfm_tags must be a list.")
+
+    cleaned_tags = []
+
+    for tag in data["lastfm_tags"]:
+        if isinstance(tag, str) and tag.strip():
+            cleaned_tags.append(tag.strip().lower())
+    if len(cleaned_tags) < 1:
+        raise GeminiAlbumGenerationError(
+            "Gemini did not return usable Last.fm tags."
+        )
+    data["lastfm_tags"] = cleaned_tags[:6]
+
+    return data
+
+
+class IndexCastError:
+    pass
+
+
+def generate_album_metadata_via_requests(journal_text, genre, era, track_count, api_key):
+    """Google kütüphanesine ihtiyaç duymadan doğrudan HTTP POST ile Gemini API'yi tetikler."""
+    if not api_key or api_key.strip() in ["", "YOUR_GEMINI_API_KEY_HERE"]:
+        raise Exception("Gemini API key is missing. Please update it in the code.")
+
+    if not journal_text or not journal_text.strip():
+        raise Exception("Journal text cannot be empty.")
+
+    prompt = build_gemini_prompt(journal_text.strip(), genre, era, track_count)
+
+    # Kütüphanesiz REST API adresi
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={api_key}"
+    headers = {"Content-Type": "application/json"}
+    payload = {
+        "contents": [{
+            "parts": [{"text": prompt}]
+        }]
+    }
+
+    response = requests.post(url, headers=headers, json=payload, timeout=30)
+    response.raise_for_status()
+
+    response_data = response.json()
+    try:
+        raw_text = response_data['candidates'][0]['content']['parts'][0]['text'].strip()
+    except (KeyError, IndexCastError):
+        raise Exception("Failed to parse response structure from Gemini API.")
+
+    cleaned_text = clean_gemini_json_text(raw_text)
+    metadata = json.loads(cleaned_text)
+    return validate_album_metadata(metadata)
+
+def normalize_track(track_name, artist_name, url):
+    return {"name": track_name, "artist": artist_name, "url": url}
+
+def fetch_tracks_by_tag(tag, limit=10):
+    if not tag:
+        return []
+
+    params = {
+        "method": "tag.gettoptracks",
+        "tag": tag,
+        "limit": limit,
+        "api_key": LASTFM_API_KEY,
+        "format": "json"
+    }
+
+    headers = {
+        "User-Agent": "AlbumCoverStudio/1.0"
+    }
+    try:
+        response = requests.get(
+            LASTFM_BASE_URL,
+            params=params,
+            headers=headers,
+            timeout=15
+        )
+        response.raise_for_status()
+
+        data = response.json()
+        raw_tracks = data.get("tracks", {}).get("track", [])
+
+        tracks = []
+
+        for item in raw_tracks:
+            track_name = item.get("name")
+            artist_data = item.get("artist")
+            url = item.get("url")
+
+            if isinstance(artist_data, dict):
+                artist_name = artist_data.get("name")
+            else:
+                artist_name = artist_data
+
+            if track_name and artist_name:
+                tracks.append(
+                    normalize_track(track_name, artist_name, url)
+                )
+
+        return tracks
+
+    except requests.RequestException as error:
+        print(f"Last.fm tag request failed for tag '{tag}': {error}")
+        return []
+
+    except ValueError:
+        print("Last.fm tag response could not be parsed as JSON.")
+        return []
+
+def fetch_tracks_by_artist(artist_name, limit=10):
+    """Last.fm artist.gettoptracks endpoint'ini kullanarak sanatçı şarkılarını çeker."""
+    if not artist_name:
+        return []
+
+    params = {
+        "method": "artist.gettoptracks",
+        "artist": artist_name,
+        "limit": limit,
+        "api_key": LASTFM_API_KEY,
+        "format": "json"
+    }
+    headers = {"User-Agent": "AlbumCoverStudio/1.0"}
+    try:
+        response = requests.get(LASTFM_BASE_URL, params=params, headers=headers, timeout=15)
+        response.raise_for_status()
+
+        data = response.json()
+        raw_tracks = data.get("toptracks", {}).get("track", [])
+
+        tracks = []
+        for item in raw_tracks:
+            track_name = item.get("name")
+            artist_data = item.get("artist")
+            url = item.get("url")
+
+            if isinstance(artist_data, dict):
+                artist_name_from_api = artist_data.get("name", artist_name)
+            else:
+                artist_name_from_api = artist_name
+
+            if track_name and artist_name_from_api:
+                tracks.append(normalize_track(track_name, artist_name_from_api, url))
+        return tracks
+    except Exception as error:
+        print(f"Last.fm artist request failed for artist '{artist_name}': {error}")
+        return []
+
+def remove_duplicate_tracks(tracks):
+    unique_tracks = []
+    seen_tracks = set()
+
+    for track in tracks:
+        track_name = track.get("name", "").strip().lower()
+        artist_name = track.get("artist", "").strip().lower()
+
+        unique_key = f"{track_name} - {artist_name}"
+
+        if track_name and artist_name and unique_key not in seen_tracks:
+            seen_tracks.add(unique_key)
+            unique_tracks.append(track)
+
+    return unique_tracks
+
+def get_tracks_from_tags(tags, target_count):
+    """Birden fazla etiket sonucunu birleştirir ve tekilleştirir."""
+    if not isinstance(tags, list):
+        tags = [str(tags)]
+
+    all_tracks = []
+    for tag in tags:
+        tag_tracks = fetch_tracks_by_tag(tag=tag, limit=target_count * 2)
+        all_tracks.extend(tag_tracks)
+
+    unique_tracks = remove_duplicate_tracks(all_tracks)
+    return unique_tracks[:target_count]
+
+def build_tracklist(tags, target_count, artist_hint=""):
+
+    final_tracks = []
+
+    if artist_hint:
+        artist_tracks = fetch_tracks_by_artist(artist_name=artist_hint, limit=target_count)
+        final_tracks.extend(artist_tracks)
+
+    if len(final_tracks) < target_count:
+        tag_tracks = get_tracks_from_tags(tags=tags, target_count=target_count)
+        combined_tracks = final_tracks + tag_tracks
+        final_tracks = remove_duplicate_tracks(combined_tracks)
+
+    return final_tracks[:target_count]
+
+def generate_cover(gemini_prompt, genre):
+    """Pollinations.ai üzerinden albüm kapağını üretir."""
+    combined_prompt = f"Album cover art, {gemini_prompt}, {genre} visual style, highly detailed, square format."
+    encoded = quote(combined_prompt)
+    url = f"https://image.pollinations.ai/prompt/{encoded}?width=600&height=600&nologo=true"
+
+    response = requests.get(url, timeout=90)
+    response.raise_for_status()
+    return Image.open(io.BytesIO(response.content)).convert("RGB")
+
+def update_status(text):
+    root.after(0, lambda: status_label.config(text=text))
 
 def display_results(album_data_param, tracklist_param, cover_image_param):
     global tk_cover_art
@@ -85,72 +384,88 @@ def display_results(album_data_param, tracklist_param, cover_image_param):
     save_btn.pack(fill="x", pady=(20, 0))
 
 
-def simulate_backend_response():
+def generate_album():
+    generate_btn.config(state="disabled")
+    thread = threading.Thread(target=generate_album_worker)
+    thread.daemon = True
+    thread.start()
 
 
-    placeholder_label.pack_forget()
+def generate_album_worker():
 
-    results_scroll_frame.pack(fill="both", expand=True)
+    global album_data, tracklist, cover_image
+    try:
+        update_status("🤖 Gemini is thinking...")
 
-    album_name_label.config(text="Aegean Rain")
-    album_meta_label.config(text="2026 • 5 songs • Azure Soundscapes")
-    album_tags_label.config(text="Tags: melancholic, rainy day, izmir, calm")
-
-    cover_canvas.create_rectangle(0, 0, 150, 150, fill="#282828", outline="")
-    cover_canvas.create_text(75, 75, text="Cover Art\n(600x600)", fill="#B3B3B3", justify="center")
-
-    for widget in tracks_inner_frame.winfo_children():
-        widget.destroy()
-
-    mock_tracks = [
-        {"name": "Beginning", "artist": "Ludovico Einaudi",
-         "url": "https://www.last.fm/music/Ludovico+Einaudi/_/Beginning"},
-        {"name": "Hong Kong", "artist": "Gorillaz", "url": "https://www.last.fm/music/Gorillaz/_/Hong+Kong"},
-        {"name": "Sentimental", "artist": "Porcupine Tree",
-         "url": "https://www.last.fm/music/Porcupine+Tree/_/Sentimental"},
-        {"name": "Overprotected", "artist": "Britney Spears",
-         "url": "https://www.last.fm/music/Britney+Spears/_/Overprotected"},
-        {"name": "The Planets, Op. 32: IV. Jupiter", "artist": "Gustav Holst",
-         "url": "https://www.last.fm/music/Gustav+Holst/_/The+Planets,+Op.+32:+IV.+Jupiter"}
-    ]
-
-    for index, track in enumerate(mock_tracks, start=1):
-        track_row = tk.Frame(tracks_inner_frame, bg="#121212", pady=5)
-        track_row.pack(fill="x", pady=2)
-
-        # Sıra Numarası
-        num_lbl = tk.Label(track_row, text=str(index), font=("Helvetica", 10), fg="#B3B3B3", bg="#121212", width=3,
-                           anchor="w")
-        num_lbl.pack(side="left")
-
-        # Şarkı Adı ve Sanatçı (Alt alta durması için küçük bir iç frame)
-        info_frame = tk.Frame(track_row, bg="#121212")
-        info_frame.pack(side="left", fill="x", expand=True, padx=10)
-
-        name_lbl = tk.Label(info_frame, text=track["name"], font=("Helvetica", 11, "bold"), fg="#FFFFFF", bg="#121212",
-                            anchor="w")
-        name_lbl.pack(fill="x")
-
-        artist_lbl = tk.Label(info_frame, text=track["artist"], font=("Helvetica", 9), fg="#B3B3B3", bg="#121212",
-                              anchor="w")
-        artist_lbl.pack(fill="x")
-
-        listen_btn = tk.Button(
-            track_row, text="Listen", font=("Helvetica", 9, "bold"),
-            bg="#282828", fg="#FFFFFF", activebackground="#3E3E3E", activeforeground="#FFFFFF",
-            bd=0, padx=12, pady=4, cursor="hand2",
-            command=lambda u=track["url"]: open_listen_link(u)
+        album_data = generate_album_metadata_via_requests(
+            journal_text=mood_text.get("1.0", "end-1c"),
+            genre=genre_combobox.get(),
+            era=era_combobox.get(),
+            track_count=int(track_spinbox.get()),
+            api_key=GEMINI_API_KEY
         )
-        listen_btn.pack(side="right", padx=5)
 
-    save_btn.pack(fill="x", pady=(20, 0))
-    status_label.config(text="Album generated successfully!")
+        update_status("🎵 Fetching tracks...")
+        tracklist = build_tracklist(
+            tags=album_data["lastfm_tags"],
+            target_count=int(track_spinbox.get()),
+            artist_hint=album_data.get("artist_name", "")
+        )
 
+        update_status("🎨 Generating cover...")
+        cover_image = generate_cover(
+            album_data["cover_prompt"],
+            genre_combobox.get()
+        )
 
-def on_generate_click():
-    status_label.config(text="Gemini is thinking...")
+        update_status("✅ Album ready!")
+        root.after(0, lambda: display_results(album_data, tracklist, cover_image))
 
-    root.after(1000, simulate_backend_response)
+    except Exception as e:
+        update_status(f"❌ Error: {e}")
+    finally:
+        root.after(0, lambda: generate_btn.config(state="normal"))
+
+def save_album():
+
+    if not album_data or cover_image is None:
+        update_status("⚠️ Generate an album first.")
+        return
+
+    folder = filedialog.askdirectory(
+        title="Select folder"
+    )
+
+    if not folder:
+        return
+    json_path = os.path.join(folder, "album.json")
+
+    with open(
+        json_path,
+        "w",
+        encoding="utf-8"
+    ) as f:
+        json.dump(
+            {
+                "album_name": album_data["album_name"],
+                "artist_name": album_data["artist_name"],
+                "year": album_data["year"],
+                "label": album_data["label"],
+                "mood_description": album_data["mood_description"],
+                "cover_prompt": album_data["cover_prompt"],
+                "lastfm_tags": album_data["lastfm_tags"],
+                "tracklist": tracklist
+            },
+            f,
+            ensure_ascii=False,
+            indent=2
+        )
+
+    png_path = os.path.join(folder, "cover.png")
+
+    cover_image.save(png_path)
+    root.after(0, lambda: display_results(album_data, tracklist, cover_image))
+    update_status("✅ Album saved successfully!")
 
 
 root = tk.Tk()
@@ -168,7 +483,7 @@ style.configure('TLabel', background='#181818', foreground='#FFFFFF', font=('Hel
 style.configure('TCombobox', fieldbackground='#282828', background='#282828', foreground='#FFFFFF')
 style.configure('TSpinbox', fieldbackground='#282828', background='#282828', foreground='#FFFFFF')
 
-# ================= SOL PANEL (Giriş Alanları) =================
+
 left_frame = tk.Frame(root, bg="#181818", padx=25, pady=25)
 left_frame.grid(row=0, column=0, sticky="nsew", padx=10, pady=10)
 
@@ -264,550 +579,13 @@ save_btn = tk.Button(
     bd=0, pady=10, cursor="hand2", command=save_album
 )
 
-
-
-
-def build_gemini_prompt(journal_text, genre, era, track_count):
-    return f"""
-You are a music industry expert and creative album concept generator.
-
-Create a fictional album concept based on the user's journal entry and selected parameters.
-
-Return ONLY one valid raw JSON object.
-Do not include markdown code fences.
-Do not include explanations.
-Do not include comments.
-Do not include any text before or after the JSON.
-
-The JSON object must match this schema exactly:
-
-{{
-  "album_name": "string",
-  "artist_name": "string",
-  "year": "string",
-  "label": "string",
-  "mood_description": "string",
-  "cover_prompt": "string",
-  "lastfm_tags": ["string", "string", "string", "string"]
-}}
-
-User input:
-- Journal / mood text: "{journal_text}"
-- Selected genre: "{genre}"
-- Selected era: "{era}"
-- Requested track count: {track_count}
-
-Rules:
-1. album_name, artist_name, year, and label must be fictional.
-2. year must be a realistic year from the selected era: "{era}".
-3. mood_description must be one clear sentence describing the album vibe.
-4. cover_prompt must be a detailed visual prompt suitable for AI album cover generation.
-5. lastfm_tags must contain 4 to 6 lowercase Last.fm-compatible music or mood tags.
-6. lastfm_tags must match the journal mood, selected genre, and selected era.
-8. For Turkish music, use tags such as "turkish pop", "turkish", "arabesque", "anatolian rock", or "turkish rock" when appropriate.
-9. Do not use real album names.
-10. Do not use real record label names.
-11. Return only valid JSON.
-"""
-
-
-def clean_gemini_json_text(text):
-    if not text:
-        raise GeminiAlbumGenerationError("Gemini returned an empty response.")
-
-    text = text.strip()
-
-    if text.startswith("```"):
-        text = text.replace("```json", "")
-        text = text.replace("```JSON", "")
-        text = text.replace("```", "")
-        text = text.strip()
-
-    start = text.find("{")
-    end = text.rfind("}")
-
-    if start == -1 or end == -1 or end <= start:
-        raise GeminiAlbumGenerationError(
-            "Gemini response does not contain a valid JSON object."
-        )
-
-    return text[start:end + 1].strip()
-
-
-def validate_album_metadata(data):
-    required_fields = [
-        "album_name",
-        "artist_name",
-        "year",
-        "label",
-        "mood_description",
-        "cover_prompt",
-        "lastfm_tags"
-    ]
-
-    for field in required_fields:
-        if field not in data:
-            raise GeminiAlbumGenerationError(
-                f"Missing required field in Gemini response: {field}"
-            )
-
-    string_fields = [
-        "album_name",
-        "artist_name",
-        "year",
-        "label",
-        "mood_description",
-        "cover_prompt",
-    ]
-
-    for field in string_fields:
-        if not isinstance(data[field], str):
-            raise GeminiAlbumGenerationError(
-                f"Field '{field}' must be a string."
-            )
-
-    if not isinstance(data["lastfm_tags"], list):
-        raise GeminiAlbumGenerationError("lastfm_tags must be a list.")
-
-    cleaned_tags = []
-
-    for tag in data["lastfm_tags"]:
-        if isinstance(tag, str) and tag.strip():
-            cleaned_tags.append(tag.strip().lower())
-
-    if len(cleaned_tags) < 1:
-        raise GeminiAlbumGenerationError(
-            "Gemini did not return usable Last.fm tags."
-        )
-
-    data["lastfm_tags"] = cleaned_tags[:6]
-
-    return data
-
-def generate_album_metadata(journal_text, genre, era, track_count, api_key):
-    if not api_key or api_key.strip() in ["", "...", "YOUR_GEMINI_API_KEY_HERE"]:
-        raise GeminiAlbumGenerationError("Gemini API key is missing.")
-
-    if not journal_text or not journal_text.strip():
-        raise GeminiAlbumGenerationError("Journal text cannot be empty.")
-
-    prompt = build_gemini_prompt(
-        journal_text=journal_text.strip(),
-        genre=genre,
-        era=era,
-        track_count=track_count
-    )
-
-    try:
-        if USING_NEW_SDK is True:
-            client = genai.Client(api_key=api_key)
-            response = client.models.generate_content(
-                model=GEMINI_MODEL_NAME,
-                contents=prompt
-            )
-            raw_text = response.text.strip()
-
-        elif USING_NEW_SDK is False:
-            genai_legacy.configure(api_key=api_key)
-            model = genai_legacy.GenerativeModel(
-                model_name=GEMINI_MODEL_NAME
-            )
-            response = model.generate_content(prompt)
-            raw_text = response.text.strip()
-
-        else:
-            raise GeminiAlbumGenerationError(
-                "Neither 'google-genai' nor 'google-generativeai' is installed."
-            )
-
-        cleaned_text = clean_gemini_json_text(raw_text)
-        metadata = json.loads(cleaned_text)
-        metadata = validate_album_metadata(metadata)
-
-
-        return metadata
-
-    except json.JSONDecodeError as e:
-        raise GeminiAlbumGenerationError(
-            f"Gemini did not return valid JSON: {e}"
-        )
-
-    except GeminiAlbumGenerationError:
-        raise
-
-    except Exception as e:
-        raise GeminiAlbumGenerationError(
-            f"Gemini album generation failed: {e}"
-        )
-
-
-
-LASTFM_BASE_URL = "https://ws.audioscrobbler.com/2.0/"
-LASTFM_API_KEY = "YOUR_LASTFM_API_KEY_HERE"
-
-
-def normalize_track(track_name, artist_name, url):
-    """
-    Returns a track dictionary that is compatible with the frontend format.
-    The frontend uses the name, artist, and url fields.
-    """
-
-    return {
-        "name": track_name,
-        "artist": artist_name,
-        "url": url
-    }
-
-
-def fetch_tracks_by_tag(tag, limit=10):
-    """
-    Fetches real songs from Last.fm by using the tag.gettoptracks endpoint.
-    The tag parameter represents a music genre, mood, or style.
-    """
-
-    if not tag:
-        return []
-
-    params = {
-        "method": "tag.gettoptracks",
-        "tag": tag,
-        "limit": limit,
-        "api_key": LASTFM_API_KEY,
-        "format": "json"
-    }
-
-    headers = {
-        "User-Agent": "AlbumCoverStudio/1.0"
-    }
-
-    try:
-        response = requests.get(
-            LASTFM_BASE_URL,
-            params=params,
-            headers=headers,
-            timeout=15
-        )
-
-        response.raise_for_status()
-
-        data = response.json()
-        raw_tracks = data.get("tracks", {}).get("track", [])
-
-        tracks = []
-
-        for item in raw_tracks:
-            track_name = item.get("name")
-            artist_data = item.get("artist")
-            url = item.get("url")
-
-            if isinstance(artist_data, dict):
-                artist_name = artist_data.get("name")
-            else:
-                artist_name = artist_data
-
-            if track_name and artist_name:
-                tracks.append(
-                    normalize_track(track_name, artist_name, url)
-                )
-
-        return tracks
-
-    except requests.RequestException as error:
-        print(f"Last.fm tag request failed for tag '{tag}': {error}")
-        return []
-
-    except ValueError:
-        print("Last.fm tag response could not be parsed as JSON.")
-        return []
-
-
-def fetch_tracks_by_artist(artist_name, limit=10):
-    """
-    Fetches popular songs of a specific artist from Last.fm
-    by using the artist.gettoptracks endpoint.
-    """
-
-    if not artist_name:
-        return []
-
-    params = {
-        "method": "artist.gettoptracks",
-        "artist": artist_name,
-        "limit": limit,
-        "api_key": LASTFM_API_KEY,
-        "format": "json"
-    }
-
-    headers = {
-        "User-Agent": "AlbumCoverStudio/1.0"
-    }
-
-    try:
-        response = requests.get(
-            LASTFM_BASE_URL,
-            params=params,
-            headers=headers,
-            timeout=15
-        )
-
-        response.raise_for_status()
-
-        data = response.json()
-        raw_tracks = data.get("toptracks", {}).get("track", [])
-
-        tracks = []
-
-        for item in raw_tracks:
-            track_name = item.get("name")
-            artist_data = item.get("artist")
-            url = item.get("url")
-
-            if isinstance(artist_data, dict):
-                artist_name_from_api = artist_data.get("name", artist_name)
-            else:
-                artist_name_from_api = artist_name
-
-            if track_name and artist_name_from_api:
-                tracks.append(
-                    normalize_track(track_name, artist_name_from_api, url)
-                )
-
-        return tracks
-
-    except requests.RequestException as error:
-        print(f"Last.fm artist request failed for artist '{artist_name}': {error}")
-        return []
-
-    except ValueError:
-        print("Last.fm artist response could not be parsed as JSON.")
-        return []
-
-
-def remove_duplicate_tracks(tracks):
-    """
-    Removes duplicate songs from the tracklist.
-    Duplicates are checked by using both the track name and artist name.
-    """
-
-    unique_tracks = []
-    seen_tracks = set()
-
-    for track in tracks:
-        track_name = track.get("name", "").strip().lower()
-        artist_name = track.get("artist", "").strip().lower()
-
-        unique_key = f"{track_name} - {artist_name}"
-
-        if track_name and artist_name and unique_key not in seen_tracks:
-            seen_tracks.add(unique_key)
-            unique_tracks.append(track)
-
-    return unique_tracks
-
-
-def get_tracks_from_tags(tags, target_count):
-    """
-    Fetches songs from multiple Last.fm tags, combines the results,
-    removes duplicate tracks, and returns the requested number of songs.
-    """
-
-    if not isinstance(tags, list):
-        tags = [str(tags)]
-
-    all_tracks = []
-
-    for tag in tags:
-        tag_tracks = fetch_tracks_by_tag(
-            tag=tag,
-            limit=target_count * 2
-        )
-
-        all_tracks.extend(tag_tracks)
-
-    unique_tracks = remove_duplicate_tracks(all_tracks)
-
-    return unique_tracks[:target_count]
-
-
-def build_tracklist(tags, target_count, artist_hint=""):
-    """
-    Main function that will be called by the frontend.
-
-    If artist_hint is provided, the function first tries to fetch
-    songs from that artist's top tracks.
-
-    If there are not enough songs, the list is completed with
-    tag-based Last.fm results.
-
-    If artist_hint is empty, the tracklist is generated directly
-    from the given tags.
-    """
-
-    final_tracks = []
-
-    if artist_hint:
-        artist_tracks = fetch_tracks_by_artist(
-            artist_name=artist_hint,
-            limit=target_count
-        )
-
-        final_tracks.extend(artist_tracks)
-
-    if len(final_tracks) < target_count:
-        tag_tracks = get_tracks_from_tags(
-            tags=tags,
-            target_count=target_count
-        )
-
-        combined_tracks = final_tracks + tag_tracks
-        final_tracks = remove_duplicate_tracks(combined_tracks)
-
-    return final_tracks[:target_count]
-
-
-
-
-
-def generate_cover(gemini_prompt, genre):
-    # REQ 6: Combine the prompt from Gemini with the user-selected music genre
-    combined_prompt = f"Album cover art, {gemini_prompt}, {genre} visual style, highly detailed"
-
-    # URL-encode the text to make it safe for web requests
-    encoded = quote(combined_prompt)
-
-    # Construct the Pollinations.ai URL
-    url = (f"https://image.pollinations.ai/prompt/{encoded}"
-           f"?width=600&height=600&nologo=true")
-
-    # Send a GET request to download the image (wait up to 90 seconds)
-    response = requests.get(url, timeout=90)
-    response.raise_for_status()
-
-    # Return the image in RGB format as a PIL Image object for the GUI developer
-    return Image.open(io.BytesIO(response.content)).convert("RGB")
-
-
-# --- TEST SECTION ---
-# This block only runs when you execute this file directly; it won't interfere when integrated into the main project.
-if __name__ == "__main__":
-    print("AI is generating the image, please wait 10-15 seconds...")
-
-    # Simulating the sample data that the Gemini (Member 2) and GUI (Member 1) developers will send
-    sample_gemini_prompt = "A rainy sea view in Izmir, peaceful and melancholic"
-    sample_genre = "Indie Rock"
-
-    try:
-        # Call our function
-        test_image = generate_cover(sample_gemini_prompt, sample_genre)
-
-        # Open the downloaded image using the computer's default image viewer
-        test_image.show()
-        print("Image successfully downloaded and displayed!")
-
-    except Exception as e:
-        print(f"An error occurred: {e}")
-
-        import threading
-import json
-import os
-from tkinter import filedialog
-
+# TEST
 album_data = {}
 tracklist = []
 cover_image = None
+tk_cover_art = None
+
+if __name__ == "__main__":
+    root.mainloop()
 
 
-def update_status(text):
-    root.after(0, lambda: status_label.config(text=text))
-
-
-def generate_album():
-    generate_btn.config(state="disabled")
-
-    thread = threading.Thread(target=generate_album_worker)
-    thread.daemon = True
-    thread.start()
-
-
-def generate_album_worker():
-    global album_data, tracklist, cover_image
-
-    try:
-        update_status("🤖 Gemini is thinking...")
-
-        album_data = generate_album_metadata(
-            journal_text=mood_text.get("1.0", "end-1c"),
-            genre=genre_combobox.get(),
-            era=era_combobox.get(),
-            track_count=int(track_spinbox.get()),
-            api_key="YOUR_GEMINI_API_KEY_HERE"
-        )
-
-        update_status("🎵 Fetching tracks...")
-
-        tracklist = build_tracklist(
-            tags=album_data["lastfm_tags"],
-            target_count=int(track_spinbox.get())
-        )
-
-        update_status("🎨 Generating cover...")
-
-        cover_image = generate_cover(
-            album_data["cover_prompt"],
-            genre_combobox.get()
-        )
-
-        update_status("✅ Album ready!")
-
-    except Exception as e:
-        update_status(f"❌ Error: {e}")
-
-    finally:
-        root.after(
-            0,
-            lambda: generate_btn.config(state="normal")
-        )
-
-
-def save_album():
-
-    if not album_data or cover_image is None:
-        update_status("⚠️ Generate an album first.")
-        return
-
-    folder = filedialog.askdirectory(
-        title="Select folder"
-    )
-
-    if not folder:
-        return
-
-    json_path = os.path.join(folder, "album.json")
-
-    with open(
-        json_path,
-        "w",
-        encoding="utf-8"
-    ) as f:
-
-        json.dump(
-            {
-                "album_name": album_data["album_name"],
-                "artist_name": album_data["artist_name"],
-                "year": album_data["year"],
-                "label": album_data["label"],
-                "mood_description": album_data["mood_description"],
-                "cover_prompt": album_data["cover_prompt"],
-                "lastfm_tags": album_data["lastfm_tags"],
-                "tracklist": tracklist
-            },
-            f,
-            ensure_ascii=False,
-            indent=2
-        )
-
-    png_path = os.path.join(folder, "cover.png")
-
-    cover_image.save(png_path)
-    root.after(0, lambda: display_results(album_data, tracklist, cover_image))
-    update_status("✅ Album saved successfully!")
