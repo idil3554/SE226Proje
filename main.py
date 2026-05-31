@@ -30,9 +30,21 @@ except (ImportError, AttributeError):
 GEMINI_MODEL_NAME = "gemini-2.5-flash"
 LASTFM_BASE_URL = "https://ws.audioscrobbler.com/2.0/"
 
-GEMINI_API_KEY = "AQ.Ab8RN6JHHTvngCQycJ91t6eTWEBPeA1LYB36mQYGeAm2__b3WA"  # Buraya Google AI Studio'dan aldığın anahtarı yapıştır
+GEMINI_API_KEY = "AQ.Ab8RN6K019Vz2sSc--GibFKVdo0EP15CIEDNmrKVnCoVtKcleQ"  # Buraya Google AI Studio'dan aldığın anahtarı yapıştır
 LASTFM_API_KEY = "1dc7d6f0c651506352ecba5987bd7a62"  # Buraya Last.fm'den aldığın API anahtarını yapıştır
 
+GENRE_VISUAL_STYLES = {
+    "Pop": "vibrant neon colors, modern glossy aesthetic, clean pop art style, sharp focus",
+    "Rock": "gritty texture, high contrast shadow, vintage album art, edgy rock aesthetic",
+    "Hip-Hop / Rap": "urban street art graffiti, moody underground lighting, cinematic retro look",
+    "Electronic": "futuristic cyberpunk style, glowing synthwave lines, abstract digital art, surreal",
+    "Indie": "dreamy lo-fi aesthetic, muted pastel colors, indie folk hipster vibe, analog film grain",
+    "R&B / Soul": "warm velvet lighting, smooth sensual atmosphere, elegant retro magazine cover design",
+    "Jazz": "monochrome noir photography, smoky cafe atmosphere, abstract minimalist line art",
+    "Metal": "dark gothic illustrations, aggressive heavy metal album aesthetic, monochrome distressed textures",
+    "Türk Pop": "warm mediterranean colors, bright contemporary turkish pop culture aesthetic, energetic styling",
+    "Klasik": "classical oil painting masterpiece, baroque gold framing, majestic artistic texture"
+}
 
 class GeminiAlbumGenerationError(Exception):
     pass
@@ -180,8 +192,8 @@ def generate_album_metadata_via_requests(journal_text, genre, era, track_count, 
     response_data = response.json()
     try:
         raw_text = response_data['candidates'][0]['content']['parts'][0]['text'].strip()
-    except (KeyError, IndexCastError):
-        raise Exception("Failed to parse response structure from Gemini API.")
+    except (KeyError, IndexError):  # Standart IndexError ile değiştirildi
+        raise Exception("Failed to parse response structure from Gemini API. Check your API Key or Quota.")
 
     cleaned_text = clean_gemini_json_text(raw_text)
     metadata = json.loads(cleaned_text)
@@ -311,30 +323,84 @@ def get_tracks_from_tags(tags, target_count):
     unique_tracks = remove_duplicate_tracks(all_tracks)
     return unique_tracks[:target_count]
 
-def build_tracklist(tags, target_count, artist_hint=""):
+
+def build_tracklist(tags, target_count):
+    """
+    REQUIREMENT 5: Gemini etiketlerini kullanarak şarkıları çeker,
+    duplicateleri temizler ve tam olarak istenen sayıda şarkı döndürür.
+    """
+    if not tags or not isinstance(tags, list):
+        tags = ["rock", "pop", "indie"]
+
+    extended_tags = tags.copy()
+    for backup in ["music", "top", "awesome"]:
+        if backup not in extended_tags:
+            extended_tags.append(backup)
+
+    tag_tracks_dict = {}
+    for tag in extended_tags:
+
+        tracks = fetch_tracks_by_tag(tag=tag, limit=target_count * 3)
+        if tracks:
+            tag_tracks_dict[tag] = tracks
 
     final_tracks = []
+    seen_keys = set()
 
-    if artist_hint:
-        artist_tracks = fetch_tracks_by_artist(artist_name=artist_hint, limit=target_count)
-        final_tracks.extend(artist_tracks)
+    max_iterations = target_count * 4
+    iterations = 0
 
-    if len(final_tracks) < target_count:
-        tag_tracks = get_tracks_from_tags(tags=tags, target_count=target_count)
-        combined_tracks = final_tracks + tag_tracks
-        final_tracks = remove_duplicate_tracks(combined_tracks)
+    while len(final_tracks) < target_count and tag_tracks_dict and iterations < max_iterations:
+        iterations += 1
+        active_tags = list(tag_tracks_dict.keys())
+
+        for tag in active_tags:
+            if len(final_tracks) >= target_count:
+                break
+
+            tracks_list = tag_tracks_dict[tag]
+            if not tracks_list:
+                del tag_tracks_dict[tag]
+                continue
+
+            track = tracks_list.pop(0)
+
+            track_name = str(track.get("name", "")).strip().lower()
+            artist_name = str(track.get("artist", "")).strip().lower()
+            unique_key = f"{track_name} - {artist_name}"
+
+            if track_name and artist_name and unique_key not in seen_keys:
+                seen_keys.add(unique_key)
+
+                final_tracks.append({
+                    "name": track.get("name", "").strip(),
+                    "artist": track.get("artist", "").strip(),
+                    "url": track.get("url", "")
+                })
 
     return final_tracks[:target_count]
 
+
 def generate_cover(gemini_prompt, genre):
-    """Pollinations.ai üzerinden albüm kapağını üretir."""
-    combined_prompt = f"Album cover art, {gemini_prompt}, {genre} visual style, highly detailed, square format."
+    """
+    REQUIREMENT 6: Gemini'dan gelen görsel promptu, seçilen müzik türünün
+    sanatsal stil açıklamasıyla birleştirerek Pollinations.ai üzerinden resmi üretir.
+    """
+    # Sözlükten türe özgü sanatsal açıklamayı çek, bulamazsa boş geç
+    style_description = GENRE_VISUAL_STYLES.get(genre, "high quality album art")
+
+    # İsterlere uygun olarak iki açıklamayı birleştir (Combined Prompt)
+    combined_prompt = f"Professional album cover artwork, {gemini_prompt}, {style_description}, square format, 8k resolution, no text, no typography."
+
     encoded = quote(combined_prompt)
     url = f"https://image.pollinations.ai/prompt/{encoded}?width=600&height=600&nologo=true"
 
-    response = requests.get(url, timeout=90)
-    response.raise_for_status()
-    return Image.open(io.BytesIO(response.content)).convert("RGB")
+    try:
+        response = requests.get(url, timeout=90)
+        response.raise_for_status()
+        return Image.open(io.BytesIO(response.content)).convert("RGB")
+    except requests.RequestException as error:
+        raise Exception(f"Failed to download album cover from Pollinations.ai: {error}")
 
 def update_status(text):
     root.after(0, lambda: status_label.config(text=text))
@@ -373,10 +439,9 @@ def display_results(album_data_param, tracklist_param, cover_image_param):
         artist_lbl = tk.Label(info_frame, text=track.get("artist", "Unknown"), font=("Helvetica", 9), fg="#B3B3B3", bg="#121212", anchor="w")
         artist_lbl.pack(fill="x")
 
-        listen_btn = tk.Button(
-            track_row, text="Listen", font=("Helvetica", 9, "bold"),
-            bg="#282828", fg="#FFFFFF", activebackground="#3E3E3E", activeforeground="#FFFFFF",
-            bd=0, padx=12, pady=4, cursor="hand2",
+
+        listen_btn = ttk.Button(
+            track_row, text="Listen", style='Listen.TButton', cursor="hand2",
             command=lambda u=track.get("url"): open_listen_link(u)
         )
         listen_btn.pack(side="right", padx=5)
@@ -385,18 +450,23 @@ def display_results(album_data_param, tracklist_param, cover_image_param):
 
 
 def generate_album():
+    user_mood = mood_text.get("1.0", "end-1c").strip()
+    if not user_mood:
+        messagebox.showwarning(
+            "Missing Input",
+            "Please write something about your mood or journal entry before generating an album!"
+        )
+        return
+
     generate_btn.config(state="disabled")
     thread = threading.Thread(target=generate_album_worker)
     thread.daemon = True
     thread.start()
 
-
 def generate_album_worker():
-
     global album_data, tracklist, cover_image
     try:
-        update_status("🤖 Gemini is thinking...")
-
+        update_status("🤖 Gemini is thinking...") #
         album_data = generate_album_metadata_via_requests(
             journal_text=mood_text.get("1.0", "end-1c"),
             genre=genre_combobox.get(),
@@ -405,14 +475,13 @@ def generate_album_worker():
             api_key=GEMINI_API_KEY
         )
 
-        update_status("🎵 Fetching tracks...")
+        update_status("🎵 Fetching tracks...") #
         tracklist = build_tracklist(
             tags=album_data["lastfm_tags"],
-            target_count=int(track_spinbox.get()),
-            artist_hint=album_data.get("artist_name", "")
+            target_count=int(track_spinbox.get())
         )
 
-        update_status("🎨 Generating cover...")
+        update_status("🎨 Generating cover...") #
         cover_image = generate_cover(
             album_data["cover_prompt"],
             genre_combobox.get()
@@ -422,50 +491,54 @@ def generate_album_worker():
         root.after(0, lambda: display_results(album_data, tracklist, cover_image))
 
     except Exception as e:
+
         update_status(f"❌ Error: {e}")
+        root.after(0, lambda: messagebox.showerror("Generation Error", str(e)))
     finally:
+
         root.after(0, lambda: generate_btn.config(state="normal"))
 
 def save_album():
-
+    """
+    REQUIREMENT 8: Üretilen albüm meta verilerini ve şarkı listesini JSON,
+    albüm kapağını ise PNG formatında kullanıcının seçtiği klasöre ihraç eder.
+    """
     if not album_data or cover_image is None:
         update_status("⚠️ Generate an album first.")
+        messagebox.showwarning("Save Warning", "Please generate an album before trying to save it.")
         return
 
-    folder = filedialog.askdirectory(
-        title="Select folder"
-    )
-
+    folder = filedialog.askdirectory(title="Select Folder to Save Album")
     if not folder:
         return
-    json_path = os.path.join(folder, "album.json")
 
-    with open(
-        json_path,
-        "w",
-        encoding="utf-8"
-    ) as f:
-        json.dump(
-            {
-                "album_name": album_data["album_name"],
-                "artist_name": album_data["artist_name"],
-                "year": album_data["year"],
-                "label": album_data["label"],
-                "mood_description": album_data["mood_description"],
-                "cover_prompt": album_data["cover_prompt"],
-                "lastfm_tags": album_data["lastfm_tags"],
-                "tracklist": tracklist
-            },
-            f,
-            ensure_ascii=False,
-            indent=2
-        )
+    try:
+        update_status("💾 Saving album files...")
 
-    png_path = os.path.join(folder, "cover.png")
+        json_path = os.path.join(folder, "album.json")
+        export_data = {
+            "album_name": album_data.get("album_name", "Unknown Album"),
+            "artist_name": album_data.get("artist_name", "Unknown Artist"),
+            "year": album_data.get("year", "2026"),
+            "label": album_data.get("label", "Indie"),
+            "mood_description": album_data.get("mood_description", ""),
+            "cover_prompt": album_data.get("cover_prompt", ""),
+            "lastfm_tags": album_data.get("lastfm_tags", []),
+            "tracklist": tracklist
+        }
 
-    cover_image.save(png_path)
-    root.after(0, lambda: display_results(album_data, tracklist, cover_image))
-    update_status("✅ Album saved successfully!")
+        with open(json_path, "w", encoding="utf-8") as f:
+            json.dump(export_data, f, ensure_ascii=False, indent=4)
+
+        png_path = os.path.join(folder, "cover.png")
+        cover_image.save(png_path, "PNG")
+
+        update_status("✅ Album saved successfully!")
+        messagebox.showinfo("Success", f"Album metadata (JSON) and cover art (PNG) successfully saved to:\n{folder}")
+
+    except Exception as error:
+        update_status(f"❌ Save Error: {error}")
+        messagebox.showerror("Save Error", f"An error occurred while saving the files:\n{error}")
 
 
 root = tk.Tk()
@@ -476,13 +549,28 @@ root.configure(bg="#121212")
 style = ttk.Style()
 style.theme_use('clam')
 
-# Genel Etiket Ayarları
+style.configure('Main.TButton',
+                background='#25a18e',
+                foreground='#FFFFFF',
+                font=('Helvetica', 11, 'bold'),
+                borderwidth=0,
+                focuscolor='none')
+style.map('Main.TButton',
+          background=[('active', '#208778'), ('disabled', '#404040')],
+          foreground=[('disabled', '#808080')])
+
+
+style.configure('Listen.TButton',
+                background='#282828',
+                foreground='#FFFFFF',
+                font=('Helvetica', 9, 'bold'),
+                borderwidth=0,
+                focuscolor='none')
+style.map('Listen.TButton',
+          background=[('active', '#3E3E3E')])
+
 style.configure('TLabel', background='#121212', foreground='#FFFFFF', font=('Helvetica', 10, 'bold'))
 
-# ----------------------------------------------------
-# COMBOBOX VE SPINBOX İÇİN KOYU MOD AYARLARI
-# ----------------------------------------------------
-# Giriş alanlarının arka planını koyu füme (#212124), yazılarını beyaz yapar
 style.configure('TCombobox',
                 fieldbackground='#212124',
                 background='#212124',
@@ -495,7 +583,7 @@ style.configure('TSpinbox',
                 foreground='#FFFFFF',
                 arrowcolor='#FFFFFF')
 
-# Seçim yaparken parlayan alanların (focus) renk ayarları
+
 style.map('TCombobox',
           fieldbackground=[('readonly', '#212124')],
           foreground=[('readonly', '#FFFFFF')])
@@ -504,14 +592,13 @@ style.map('TSpinbox',
           fieldbackground=[('readonly', '#212124')],
           foreground=[('readonly', '#FFFFFF')])
 
-# Combobox'a tıklandığında açılan listenin (dropdown pop-up) renklerini koyu mod yapmak için:
 root.option_add('*TCombobox*Listbox.background', '#212124')
 root.option_add('*TCombobox*Listbox.foreground', '#FFFFFF')
 root.option_add('*TCombobox*Listbox.selectBackground', '#25a18e') # Seçilen satırın parlama rengi
 root.option_add('*TCombobox*Listbox.selectForeground', '#FFFFFF')
 root.option_add('*TCombobox*Listbox.font', ('Helvetica', 10))
 
-# Ana Başlık Şeridi
+
 top_title_frame = tk.Frame(root, bg="#121212", padx=20, pady=10)
 top_title_frame.pack(fill="x")
 
@@ -520,13 +607,10 @@ title_label.pack(anchor="w")
 subtitle_label = tk.Label(top_title_frame, text="Describe your mood, enjoy the generated tracklist.", font=("Helvetica", 10), fg="#B3B3B3", bg="#121212")
 subtitle_label.pack(anchor="w")
 
-# ----------------------------------------------------
-# 1. EN ÜST KATMAN: FİLTRELEME ŞEYSİ (Yan Yana)
-# ----------------------------------------------------
+
 filter_bar_frame = tk.Frame(root, bg="#181818", padx=20, pady=15, bd=1, relief="flat")
 filter_bar_frame.pack(fill="x", padx=20, pady=5)
 
-# Tür Seçimi
 genre_sub_frame = tk.Frame(filter_bar_frame, bg="#181818")
 genre_sub_frame.pack(side="left", expand=True, fill="x", padx=10)
 genre_label = ttk.Label(genre_sub_frame, text="Genre:", style='TLabel')
@@ -537,7 +621,7 @@ genre_combobox = ttk.Combobox(genre_sub_frame, values=genres, state="readonly")
 genre_combobox.set("Rock")
 genre_combobox.pack(fill="x")
 
-# Dönem Seçimi
+
 era_sub_frame = tk.Frame(filter_bar_frame, bg="#181818")
 era_sub_frame.pack(side="left", expand=True, fill="x", padx=10)
 era_label = ttk.Label(era_sub_frame, text="Era:", style='TLabel')
@@ -548,7 +632,7 @@ era_combobox = ttk.Combobox(era_sub_frame, values=eras, state="readonly")
 era_combobox.set("2000s")
 era_combobox.pack(fill="x")
 
-# Şarkı Sayısı Seçimi
+
 track_sub_frame = tk.Frame(filter_bar_frame, bg="#181818")
 track_sub_frame.pack(side="left", expand=True, fill="x", padx=10)
 track_label = ttk.Label(track_sub_frame, text="Track Count (6-14):", style='TLabel')
@@ -558,13 +642,11 @@ track_spinbox = ttk.Spinbox(track_sub_frame, from_=6, to=14, state="readonly")
 track_spinbox.set(10)
 track_spinbox.pack(fill="x")
 
-# ----------------------------------------------------
-# 2. ORTA KATMAN: SONUÇLAR VE ŞARKI ÖNERİLERİ
-# ----------------------------------------------------
+
 middle_results_frame = tk.Frame(root, bg="#121212", padx=20, pady=10)
 middle_results_frame.pack(fill="both", expand=True, padx=20, pady=5)
 
-# Sol Kısım: Albüm Detayları ve Kapak Resmi
+
 left_output_frame = tk.Frame(middle_results_frame, bg="#121212", width=200)
 left_output_frame.pack(side="left", fill="y", padx=(0, 20))
 
@@ -583,7 +665,7 @@ album_meta_label.pack(anchor="w")
 album_tags_label = tk.Label(left_output_frame, text="", font=("Helvetica", 9, "italic"), fg="#25a18e", bg="#121212", justify="left", wraplength=180)
 album_tags_label.pack(anchor="w", pady=(5, 0))
 
-# Sağ Kısım: Genişleyen Şarkı Listesi Mockup Alanı
+
 right_tracks_frame = tk.Frame(middle_results_frame, bg="#121212")
 right_tracks_frame.pack(side="right", fill="both", expand=True)
 
@@ -592,26 +674,37 @@ placeholder_label.pack(expand=True)
 
 results_scroll_frame = tk.Frame(right_tracks_frame, bg="#121212")
 
+
+
+scroll_canvas = tk.Canvas(results_scroll_frame, bg="#121212", bd=0, highlightthickness=0)
+scrollbar = ttk.Scrollbar(results_scroll_frame, orient="vertical", command=scroll_canvas.yview)
+tracks_inner_frame = tk.Frame(scroll_canvas, bg="#121212")
+
+
+tracks_inner_frame.bind(
+    "<Configure>",
+    lambda e: scroll_canvas.configure(scrollregion=scroll_canvas.bbox("all"))
+)
+scroll_canvas.create_window((0, 0), window=tracks_inner_frame, anchor="nw")
+scroll_canvas.configure(yscrollcommand=scrollbar.set)
+
 tracks_title = tk.Label(results_scroll_frame, text="#   Title & Artist", font=("Helvetica", 10, "bold"), fg="#B3B3B3", bg="#121212")
 tracks_title.pack(anchor="w", pady=(0, 5))
 
-# Kaydırılabilir Şarkı Satırları Kutusu
-tracks_inner_frame = tk.Frame(results_scroll_frame, bg="#121212")
-tracks_inner_frame.pack(fill="both", expand=True)
 
-save_btn = tk.Button(
-    results_scroll_frame, text="SAVE ALBUM (JSON + PNG)", font=("Helvetica", 11, "bold"),
-    bg="#25a18e", fg="#FFFFFF", activebackground="#208778", activeforeground="#FFFFFF",
-    bd=0, pady=8, cursor="hand2", command=save_album
+scroll_canvas.pack(side="left", fill="both", expand=True)
+scrollbar.pack(side="right", fill="y")
+
+save_btn = ttk.Button(
+    results_scroll_frame, text="SAVE ALBUM (JSON + PNG)",
+    style='Main.TButton', cursor="hand2", command=save_album
 )
 
-# ----------------------------------------------------
-# 3. EN ALT KATMAN: MOOD METİN ALANI VE BUTON (Şerit Halinde)
-# ----------------------------------------------------
+
 bottom_input_frame = tk.Frame(root, bg="#181818", padx=20, pady=15)
 bottom_input_frame.pack(fill="x", side="bottom")
 
-# Mood Sol Blok
+
 mood_entry_container = tk.Frame(bottom_input_frame, bg="#181818")
 mood_entry_container.pack(side="left", fill="both", expand=True, padx=(0, 15))
 
@@ -622,18 +715,24 @@ mood_text = tk.Text(mood_entry_container, height=3, bg="#282828", fg="#FFFFFF", 
 mood_text.insert("1.0", "I was looking at the sea in Izmir. It was raining softly, and an old song was playing through my headphones. I felt both peaceful and melancholic.")
 mood_text.pack(fill="both", expand=True)
 
-# Buton ve Statü Sağ Blok
+
 button_container = tk.Frame(bottom_input_frame, bg="#181818")
 button_container.pack(side="right", fill="y", anchor="e")
 
-generate_btn = tk.Button(
-    button_container, text="GENERATE ALBUM", font=("Helvetica", 12, "bold"), bg="#25a18e", fg="#FFFFFF",
-    activebackground="#208778", activeforeground="#FFFFFF", bd=0, padx=25, cursor="hand2", command=generate_album
+generate_btn = ttk.Button(
+    button_container, text="GENERATE ALBUM",
+    style='Main.TButton', cursor="hand2", command=generate_album
 )
+
 generate_btn.pack(fill="both", expand=True, pady=(0, 5))
 
 status_label = tk.Label(button_container, text="Ready", font=("Helvetica", 9, "italic"), fg="#B3B3B3", bg="#181818")
 status_label.pack(anchor="w")
+
+def _on_mousewheel(event):
+    scroll_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+
+scroll_canvas.bind_all("<MouseWheel>", _on_mousewheel)
 
 # TEST
 album_data = {}
