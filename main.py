@@ -30,7 +30,7 @@ except (ImportError, AttributeError):
 GEMINI_MODEL_NAME = "gemini-2.5-flash"
 LASTFM_BASE_URL = "https://ws.audioscrobbler.com/2.0/"
 
-GEMINI_API_KEY = "AQ.Ab8RN6K9oPfSNsD-86YQJvu3N4qei2_BOiVGYDIaAaTALZaZZw"  # Buraya Google AI Studio'dan aldığın anahtarı yapıştır
+GEMINI_API_KEY = "AQ.Ab8RN6JHHTvngCQycJ91t6eTWEBPeA1LYB36mQYGeAm2__b3WA"  # Buraya Google AI Studio'dan aldığın anahtarı yapıştır
 LASTFM_API_KEY = "1dc7d6f0c651506352ecba5987bd7a62"  # Buraya Last.fm'den aldığın API anahtarını yapıştır
 
 
@@ -470,114 +470,170 @@ def save_album():
 
 root = tk.Tk()
 root.title("Album Cover Studio")
-root.geometry("1100x700")
+root.geometry("1100x750")
 root.configure(bg="#121212")
-
-root.columnconfigure(0, weight=4)  # Sol panel genişlik oranı
-root.columnconfigure(1, weight=6)  # Sağ panel genişlik oranı
-root.rowconfigure(0, weight=1)
 
 style = ttk.Style()
 style.theme_use('clam')
-style.configure('TLabel', background='#181818', foreground='#FFFFFF', font=('Helvetica', 10))
-style.configure('TCombobox', fieldbackground='#282828', background='#282828', foreground='#FFFFFF')
-style.configure('TSpinbox', fieldbackground='#282828', background='#282828', foreground='#FFFFFF')
 
+# Genel Etiket Ayarları
+style.configure('TLabel', background='#121212', foreground='#FFFFFF', font=('Helvetica', 10, 'bold'))
 
-left_frame = tk.Frame(root, bg="#181818", padx=25, pady=25)
-left_frame.grid(row=0, column=0, sticky="nsew", padx=10, pady=10)
+# ----------------------------------------------------
+# COMBOBOX VE SPINBOX İÇİN KOYU MOD AYARLARI
+# ----------------------------------------------------
+# Giriş alanlarının arka planını koyu füme (#212124), yazılarını beyaz yapar
+style.configure('TCombobox',
+                fieldbackground='#212124',
+                background='#212124',
+                foreground='#FFFFFF',
+                arrowcolor='#FFFFFF')
 
-title_label = tk.Label(left_frame, text="Album Cover Studio", font=("Helvetica", 20, "bold"), fg="#FFFFFF",
-                       bg="#181818")
-title_label.pack(anchor="w", pady=(0, 5))
+style.configure('TSpinbox',
+                fieldbackground='#212124',
+                background='#212124',
+                foreground='#FFFFFF',
+                arrowcolor='#FFFFFF')
 
-subtitle_label = tk.Label(left_frame, text="Describe your mood, enjoy the generated tracklist.", font=("Helvetica", 10),
-                          fg="#B3B3B3", bg="#181818")
-subtitle_label.pack(anchor="w", pady=(0, 25))
+# Seçim yaparken parlayan alanların (focus) renk ayarları
+style.map('TCombobox',
+          fieldbackground=[('readonly', '#212124')],
+          foreground=[('readonly', '#FFFFFF')])
 
-mood_label = tk.Label(left_frame, text="Your Mood (English or Turkish):", font=("Helvetica", 10, "bold"), fg="#1DB954",
-                      bg="#181818")
-mood_label.pack(anchor="w", pady=(5, 5))
+style.map('TSpinbox',
+          fieldbackground=[('readonly', '#212124')],
+          foreground=[('readonly', '#FFFFFF')])
 
-mood_text = tk.Text(left_frame, height=8, width=35, bg="#282828", fg="#FFFFFF", insertbackground="white",
-                    font=("Helvetica", 10), bd=0, padx=10, pady=10)
-mood_text.insert("1.0",
-                 "I was looking at the sea in Izmir. It was raining softly, and an old song was playing through my headphones. I felt both peaceful and melancholic.")
-mood_text.pack(fill="x", pady=(0, 15))
+# Combobox'a tıklandığında açılan listenin (dropdown pop-up) renklerini koyu mod yapmak için:
+root.option_add('*TCombobox*Listbox.background', '#212124')
+root.option_add('*TCombobox*Listbox.foreground', '#FFFFFF')
+root.option_add('*TCombobox*Listbox.selectBackground', '#25a18e') # Seçilen satırın parlama rengi
+root.option_add('*TCombobox*Listbox.selectForeground', '#FFFFFF')
+root.option_add('*TCombobox*Listbox.font', ('Helvetica', 10))
 
-genre_label = ttk.Label(left_frame, text="Genre:", style='TLabel')
-genre_label.pack(anchor="w", pady=(5, 2))
+# Ana Başlık Şeridi
+top_title_frame = tk.Frame(root, bg="#121212", padx=20, pady=10)
+top_title_frame.pack(fill="x")
+
+title_label = tk.Label(top_title_frame, text="Album Cover Studio", font=("Helvetica", 20, "bold"), fg="#FFFFFF", bg="#121212")
+title_label.pack(anchor="w")
+subtitle_label = tk.Label(top_title_frame, text="Describe your mood, enjoy the generated tracklist.", font=("Helvetica", 10), fg="#B3B3B3", bg="#121212")
+subtitle_label.pack(anchor="w")
+
+# ----------------------------------------------------
+# 1. EN ÜST KATMAN: FİLTRELEME ŞEYSİ (Yan Yana)
+# ----------------------------------------------------
+filter_bar_frame = tk.Frame(root, bg="#181818", padx=20, pady=15, bd=1, relief="flat")
+filter_bar_frame.pack(fill="x", padx=20, pady=5)
+
+# Tür Seçimi
+genre_sub_frame = tk.Frame(filter_bar_frame, bg="#181818")
+genre_sub_frame.pack(side="left", expand=True, fill="x", padx=10)
+genre_label = ttk.Label(genre_sub_frame, text="Genre:", style='TLabel')
+genre_label.config(background='#181818')
+genre_label.pack(anchor="w", pady=(0, 2))
 genres = ["Pop", "Rock", "Hip-Hop / Rap", "Electronic", "Indie", "R&B / Soul", "Jazz", "Metal", "Türk Pop", "Klasik"]
-genre_combobox = ttk.Combobox(left_frame, values=genres, state="readonly")
+genre_combobox = ttk.Combobox(genre_sub_frame, values=genres, state="readonly")
 genre_combobox.set("Rock")
-genre_combobox.pack(fill="x", pady=(0, 15))
+genre_combobox.pack(fill="x")
 
-era_label = ttk.Label(left_frame, text="Era:", style='TLabel')
-era_label.pack(anchor="w", pady=(5, 2))
+# Dönem Seçimi
+era_sub_frame = tk.Frame(filter_bar_frame, bg="#181818")
+era_sub_frame.pack(side="left", expand=True, fill="x", padx=10)
+era_label = ttk.Label(era_sub_frame, text="Era:", style='TLabel')
+era_label.config(background='#181818')
+era_label.pack(anchor="w", pady=(0, 2))
 eras = ["1970s", "1980s", "1990s", "2000s", "2010s", "2020s"]
-era_combobox = ttk.Combobox(left_frame, values=eras, state="readonly")
+era_combobox = ttk.Combobox(era_sub_frame, values=eras, state="readonly")
 era_combobox.set("2000s")
-era_combobox.pack(fill="x", pady=(0, 15))
+era_combobox.pack(fill="x")
 
-track_label = ttk.Label(left_frame, text="Track Count (6-14):", style='TLabel')
-track_label.pack(anchor="w", pady=(5, 2))
-track_spinbox = ttk.Spinbox(left_frame, from_=6, to=14, state="readonly")
+# Şarkı Sayısı Seçimi
+track_sub_frame = tk.Frame(filter_bar_frame, bg="#181818")
+track_sub_frame.pack(side="left", expand=True, fill="x", padx=10)
+track_label = ttk.Label(track_sub_frame, text="Track Count (6-14):", style='TLabel')
+track_label.config(background='#181818')
+track_label.pack(anchor="w", pady=(0, 2))
+track_spinbox = ttk.Spinbox(track_sub_frame, from_=6, to=14, state="readonly")
 track_spinbox.set(10)
-track_spinbox.pack(fill="x", pady=(0, 30))
+track_spinbox.pack(fill="x")
 
-generate_btn = tk.Button(
-    left_frame, text="GENERATE ALBUM", font=("Helvetica", 12, "bold"), bg="#1DB954", fg="#FFFFFF",
-    activebackground="#1ed760", activeforeground="#FFFFFF", bd=0, pady=12, cursor="hand2",
-    command=generate_album
-)
-generate_btn.pack(fill="x", pady=(0, 15))
+# ----------------------------------------------------
+# 2. ORTA KATMAN: SONUÇLAR VE ŞARKI ÖNERİLERİ
+# ----------------------------------------------------
+middle_results_frame = tk.Frame(root, bg="#121212", padx=20, pady=10)
+middle_results_frame.pack(fill="both", expand=True, padx=20, pady=5)
 
-status_label = tk.Label(left_frame, text="Ready", font=("Helvetica", 9, "italic"), fg="#B3B3B3", bg="#181818")
-status_label.pack(anchor="w")
+# Sol Kısım: Albüm Detayları ve Kapak Resmi
+left_output_frame = tk.Frame(middle_results_frame, bg="#121212", width=200)
+left_output_frame.pack(side="left", fill="y", padx=(0, 20))
 
-right_frame = tk.Frame(root, bg="#121212", padx=25, pady=25)
-right_frame.grid(row=0, column=1, sticky="nsew", padx=10, pady=10)
+cover_canvas = tk.Canvas(left_output_frame, width=150, height=150, bg="#282828", bd=0, highlightthickness=0)
+cover_canvas.pack(pady=(10, 10))
 
-placeholder_label = tk.Label(right_frame, text="Generated tracklist will be shown here.",
-                             font=("Helvetica", 14, "italic"), fg="#535353", bg="#121212")
+album_type_lbl = tk.Label(left_output_frame, text="ALBUM (GENERATED BY AI)", font=("Helvetica", 8, "bold"), fg="#B3B3B3", bg="#121212")
+album_type_lbl.pack(anchor="w")
+
+album_name_label = tk.Label(left_output_frame, text="", font=("Helvetica", 14, "bold"), fg="#FFFFFF", bg="#121212", justify="left", wraplength=180)
+album_name_label.pack(anchor="w", pady=(2, 2))
+
+album_meta_label = tk.Label(left_output_frame, text="", font=("Helvetica", 9), fg="#B3B3B3", bg="#121212")
+album_meta_label.pack(anchor="w")
+
+album_tags_label = tk.Label(left_output_frame, text="", font=("Helvetica", 9, "italic"), fg="#25a18e", bg="#121212", justify="left", wraplength=180)
+album_tags_label.pack(anchor="w", pady=(5, 0))
+
+# Sağ Kısım: Genişleyen Şarkı Listesi Mockup Alanı
+right_tracks_frame = tk.Frame(middle_results_frame, bg="#121212")
+right_tracks_frame.pack(side="right", fill="both", expand=True)
+
+placeholder_label = tk.Label(right_tracks_frame, text="Generated tracklist will be shown here.", font=("Helvetica", 12, "italic"), fg="#535353", bg="#121212")
 placeholder_label.pack(expand=True)
 
-results_scroll_frame = tk.Frame(right_frame, bg="#121212")
+results_scroll_frame = tk.Frame(right_tracks_frame, bg="#121212")
 
-header_frame = tk.Frame(results_scroll_frame, bg="#121212")
-header_frame.pack(fill="x", anchor="w", pady=(0, 20))
+tracks_title = tk.Label(results_scroll_frame, text="#   Title & Artist", font=("Helvetica", 10, "bold"), fg="#B3B3B3", bg="#121212")
+tracks_title.pack(anchor="w", pady=(0, 5))
 
-cover_canvas = tk.Canvas(header_frame, width=150, height=150, bg="#282828", bd=0, highlightthickness=0)
-cover_canvas.pack(side="left", padx=(0, 20))
-
-album_info_frame = tk.Frame(header_frame, bg="#121212")
-album_info_frame.pack(side="left", fill="both", expand=True)
-
-album_type_lbl = tk.Label(album_info_frame, text="ALBUM (GENERATED BY AI)", font=("Helvetica", 8, "bold"), fg="#B3B3B3",
-                          bg="#121212")
-album_type_lbl.pack(anchor="w", pady=(5, 0))
-
-album_name_label = tk.Label(album_info_frame, text="", font=("Helvetica", 24, "bold"), fg="#FFFFFF", bg="#121212")
-album_name_label.pack(anchor="w")
-
-album_meta_label = tk.Label(album_info_frame, text="", font=("Helvetica", 10), fg="#FFFFFF", bg="#121212")
-album_meta_label.pack(anchor="w", pady=(2, 2))
-
-album_tags_label = tk.Label(album_info_frame, text="", font=("Helvetica", 9, "italic"), fg="#1DB954", bg="#121212")
-album_tags_label.pack(anchor="w")
-
-tracks_title = tk.Label(results_scroll_frame, text="#   Title", font=("Helvetica", 10, "bold"), fg="#B3B3B3",
-                        bg="#121212")
-tracks_title.pack(anchor="w", pady=(10, 5))
-
+# Kaydırılabilir Şarkı Satırları Kutusu
 tracks_inner_frame = tk.Frame(results_scroll_frame, bg="#121212")
 tracks_inner_frame.pack(fill="both", expand=True)
 
 save_btn = tk.Button(
     results_scroll_frame, text="SAVE ALBUM (JSON + PNG)", font=("Helvetica", 11, "bold"),
-    bg="#1DB954", fg="#FFFFFF", activebackground="#1ed760", activeforeground="#FFFFFF",
-    bd=0, pady=10, cursor="hand2", command=save_album
+    bg="#25a18e", fg="#FFFFFF", activebackground="#208778", activeforeground="#FFFFFF",
+    bd=0, pady=8, cursor="hand2", command=save_album
 )
+
+# ----------------------------------------------------
+# 3. EN ALT KATMAN: MOOD METİN ALANI VE BUTON (Şerit Halinde)
+# ----------------------------------------------------
+bottom_input_frame = tk.Frame(root, bg="#181818", padx=20, pady=15)
+bottom_input_frame.pack(fill="x", side="bottom")
+
+# Mood Sol Blok
+mood_entry_container = tk.Frame(bottom_input_frame, bg="#181818")
+mood_entry_container.pack(side="left", fill="both", expand=True, padx=(0, 15))
+
+mood_label = tk.Label(mood_entry_container, text="Your Mood (English or Turkish):", font=("Helvetica", 10, "bold"), fg="#25a18e", bg="#181818")
+mood_label.pack(anchor="w", pady=(0, 4))
+
+mood_text = tk.Text(mood_entry_container, height=3, bg="#282828", fg="#FFFFFF", insertbackground="white", font=("Helvetica", 10), bd=0, padx=10, pady=8, wrap="word")
+mood_text.insert("1.0", "I was looking at the sea in Izmir. It was raining softly, and an old song was playing through my headphones. I felt both peaceful and melancholic.")
+mood_text.pack(fill="both", expand=True)
+
+# Buton ve Statü Sağ Blok
+button_container = tk.Frame(bottom_input_frame, bg="#181818")
+button_container.pack(side="right", fill="y", anchor="e")
+
+generate_btn = tk.Button(
+    button_container, text="GENERATE ALBUM", font=("Helvetica", 12, "bold"), bg="#25a18e", fg="#FFFFFF",
+    activebackground="#208778", activeforeground="#FFFFFF", bd=0, padx=25, cursor="hand2", command=generate_album
+)
+generate_btn.pack(fill="both", expand=True, pady=(0, 5))
+
+status_label = tk.Label(button_container, text="Ready", font=("Helvetica", 9, "italic"), fg="#B3B3B3", bg="#181818")
+status_label.pack(anchor="w")
 
 # TEST
 album_data = {}
