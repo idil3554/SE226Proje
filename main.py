@@ -30,7 +30,7 @@ except (ImportError, AttributeError):
 GEMINI_MODEL_NAME = "gemini-2.5-flash"
 LASTFM_BASE_URL = "https://ws.audioscrobbler.com/2.0/"
 
-GEMINI_API_KEY = "AQ.Ab8RN6K019Vz2sSc--GibFKVdo0EP15CIEDNmrKVnCoVtKcleQ"  # Buraya Google AI Studio'dan aldığın anahtarı yapıştır
+GEMINI_API_KEY = "AIzaSyBUdafFB7SMYl9eBtGwUV079m5EZAHm5Jw"  # Buraya Google AI Studio'dan aldığın anahtarı yapıştır
 LASTFM_API_KEY = "1dc7d6f0c651506352ecba5987bd7a62"  # Buraya Last.fm'den aldığın API anahtarını yapıştır
 
 GENRE_VISUAL_STYLES = {
@@ -395,6 +395,7 @@ def generate_cover(gemini_prompt, genre):
     encoded = quote(combined_prompt)
     url = f"https://image.pollinations.ai/prompt/{encoded}?width=600&height=600&nologo=true"
 
+
     try:
         response = requests.get(url, timeout=90)
         response.raise_for_status()
@@ -423,6 +424,8 @@ def display_results(album_data_param, tracklist_param, cover_image_param):
     for widget in tracks_inner_frame.winfo_children():
         widget.destroy()
 
+    scroll_canvas.yview_moveto(0)
+
     for index, track in enumerate(tracklist_param, start=1):
         track_row = tk.Frame(tracks_inner_frame, bg="#121212", pady=5)
         track_row.pack(fill="x", pady=2)
@@ -446,7 +449,7 @@ def display_results(album_data_param, tracklist_param, cover_image_param):
         )
         listen_btn.pack(side="right", padx=5)
 
-    save_btn.pack(fill="x", pady=(20, 0))
+    save_btn.pack(fill="x", pady=(12, 0), ipady=6)
 
 
 def generate_album():
@@ -498,6 +501,19 @@ def generate_album_worker():
 
         root.after(0, lambda: generate_btn.config(state="normal"))
 
+def make_safe_filename(name):
+    safe_name = "".join(
+        char for char in name
+        if char.isalnum() or char in (" ", "_", "-")
+    ).strip()
+
+    safe_name = "_".join(safe_name.split())
+
+    if not safe_name:
+        safe_name = "generated_album"
+
+    return safe_name
+
 def save_album():
     """
     REQUIREMENT 8: Üretilen albüm meta verilerini ve şarkı listesini JSON,
@@ -515,7 +531,11 @@ def save_album():
     try:
         update_status("💾 Saving album files...")
 
-        json_path = os.path.join(folder, "album.json")
+        album_filename = make_safe_filename(
+            album_data.get("album_name", "generated_album")
+        )
+
+        json_path = os.path.join(folder, f"{album_filename}.json")
         export_data = {
             "album_name": album_data.get("album_name", "Unknown Album"),
             "artist_name": album_data.get("artist_name", "Unknown Artist"),
@@ -530,7 +550,7 @@ def save_album():
         with open(json_path, "w", encoding="utf-8") as f:
             json.dump(export_data, f, ensure_ascii=False, indent=4)
 
-        png_path = os.path.join(folder, "cover.png")
+        png_path = os.path.join(folder, f"{album_filename}.png")
         cover_image.save(png_path, "PNG")
 
         update_status("✅ Album saved successfully!")
@@ -676,28 +696,67 @@ results_scroll_frame = tk.Frame(right_tracks_frame, bg="#121212")
 
 
 
-scroll_canvas = tk.Canvas(results_scroll_frame, bg="#121212", bd=0, highlightthickness=0)
-scrollbar = ttk.Scrollbar(results_scroll_frame, orient="vertical", command=scroll_canvas.yview)
-tracks_inner_frame = tk.Frame(scroll_canvas, bg="#121212")
+tracks_title = tk.Label(
+    results_scroll_frame,
+    text="#   Title & Artist",
+    font=("Helvetica", 10, "bold"),
+    fg="#B3B3B3",
+    bg="#121212"
+)
+tracks_title.pack(anchor="w", pady=(0, 5))
 
+# Scrollable tracklist container
+tracklist_area = tk.Frame(results_scroll_frame, bg="#121212")
+tracklist_area.pack(fill="both", expand=True)
+
+scroll_canvas = tk.Canvas(
+    tracklist_area,
+    bg="#121212",
+    bd=0,
+    highlightthickness=0
+)
+
+scrollbar = ttk.Scrollbar(
+    tracklist_area,
+    orient="vertical",
+    command=scroll_canvas.yview
+)
+
+tracks_inner_frame = tk.Frame(scroll_canvas, bg="#121212")
 
 tracks_inner_frame.bind(
     "<Configure>",
-    lambda e: scroll_canvas.configure(scrollregion=scroll_canvas.bbox("all"))
+    lambda e: scroll_canvas.configure(
+        scrollregion=scroll_canvas.bbox("all")
+    )
 )
-scroll_canvas.create_window((0, 0), window=tracks_inner_frame, anchor="nw")
+
+scroll_canvas_window = scroll_canvas.create_window(
+    (0, 0),
+    window=tracks_inner_frame,
+    anchor="nw"
+)
+
 scroll_canvas.configure(yscrollcommand=scrollbar.set)
 
-tracks_title = tk.Label(results_scroll_frame, text="#   Title & Artist", font=("Helvetica", 10, "bold"), fg="#B3B3B3", bg="#121212")
-tracks_title.pack(anchor="w", pady=(0, 5))
-
+scroll_canvas.bind(
+    "<Configure>",
+    lambda e: scroll_canvas.itemconfig(
+        scroll_canvas_window,
+        width=e.width
+    )
+)
 
 scroll_canvas.pack(side="left", fill="both", expand=True)
 scrollbar.pack(side="right", fill="y")
 
+# Save button stays under the tracklist area
 save_btn = ttk.Button(
-    results_scroll_frame, text="SAVE ALBUM (JSON + PNG)",
-    style='Main.TButton', cursor="hand2", command=save_album
+    results_scroll_frame,
+    text="SAVE ALBUM (JSON + PNG)",
+    style="Main.TButton",
+    cursor="hand2",
+    command=save_album
 )
 
 
